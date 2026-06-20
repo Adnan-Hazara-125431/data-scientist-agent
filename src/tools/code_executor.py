@@ -39,6 +39,25 @@ ALLOWED_BUILTINS = {
     "sum": sum,
     "tuple": tuple,
     "zip": zip,
+    "__import__": __import__,
+    # Exception types — needed so generated code can use try/except blocks
+    # (e.g. `except (ValueError, TypeError):`) without crashing with a
+    # NameError because the exception class itself isn't in scope.
+    "Exception": Exception,
+    "ValueError": ValueError,
+    "TypeError": TypeError,
+    "KeyError": KeyError,
+    "IndexError": IndexError,
+    "AttributeError": AttributeError,
+    "ZeroDivisionError": ZeroDivisionError,
+    "RuntimeError": RuntimeError,
+    "StopIteration": StopIteration,
+    "NotImplementedError": NotImplementedError,
+    "ArithmeticError": ArithmeticError,
+    "OverflowError": OverflowError,
+    "FileNotFoundError": FileNotFoundError,
+    "ImportError": ImportError,
+    "NameError": NameError,
 }
 
 
@@ -59,13 +78,21 @@ def execute_code(
     """
     Execute Python code in a restricted namespace.
 
+    IMPORTANT: We use a SINGLE namespace dict for both globals and locals.
+    If you pass separate dicts to exec(), any function DEFINED inside the
+    executed code gets its __globals__ bound to the globals dict only — so
+    nested functions can't see anything (like `pd`, `np`, `df`) that was
+    only placed in the locals dict. Using one shared dict avoids this
+    scoping trap entirely.
+
     Returns dict with keys: success, stdout, stderr, error, result_df, figures.
     """
     code = extract_python_code(code)
     stdout_buffer = io.StringIO()
     stderr_buffer = io.StringIO()
 
-    local_vars: dict[str, Any] = {
+    namespace: dict[str, Any] = {
+        "__builtins__": ALLOWED_BUILTINS,
         "pd": pd,
         "np": np,
         "plt": plt,
@@ -73,17 +100,15 @@ def execute_code(
         "df": df.copy() if df is not None else pd.DataFrame(),
     }
     if extra_locals:
-        local_vars.update(extra_locals)
-
-    safe_globals = {"__builtins__": ALLOWED_BUILTINS}
+        namespace.update(extra_locals)
 
     try:
         with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
-            exec(code, safe_globals, local_vars)
+            exec(code, namespace)
 
-        result_df = local_vars.get("df")
+        result_df = namespace.get("df")
         if result_df is None:
-            result_df = local_vars.get("result_df")
+            result_df = namespace.get("result_df")
 
         figs = [plt.figure(i) for i in plt.get_fignums()]
 
@@ -94,7 +119,11 @@ def execute_code(
             "error": None,
             "result_df": result_df if isinstance(result_df, pd.DataFrame) else None,
             "figures": figs,
-            "locals": {k: v for k, v in local_vars.items() if not k.startswith("_")},
+            "locals": {
+                k: v
+                for k, v in namespace.items()
+                if not k.startswith("_") and k not in ("pd", "np", "plt", "sns")
+            },
         }
     except Exception:
         plt.close("all")

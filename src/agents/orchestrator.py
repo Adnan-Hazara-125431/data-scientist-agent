@@ -117,7 +117,11 @@ class DataScientistOrchestrator:
             errors.append(f"Cleaning failed: {clean_result['error']}")
             cleaned_df = raw_df.copy()
         else:
-            cleaned_df = clean_result["result_df"] or raw_df.copy()
+            cleaned_df = (
+                clean_result["result_df"]
+                if clean_result["result_df"] is not None
+                else raw_df.copy()
+            )
             self._log(progress, f"[Cleaner] Done. Shape: {cleaned_df.shape}", on_progress)
 
         result.cleaned_df = cleaned_df
@@ -171,31 +175,59 @@ class DataScientistOrchestrator:
             on_progress,
         )
 
-        analysis_df = heal_result["result"]["result_df"] or cleaned_df
+        analysis_df = (
+            heal_result["result"]["result_df"]
+            if heal_result["result"]["result_df"] is not None
+            else cleaned_df
+        )
 
-        # ── Step 4: Visualizer ────────────────────────────────────────────
+        # ── Step 4: Visualizer (up to 3 retries) ─────────────────────────
         self._log(progress, "[Visualizer] Creating charts and summary...", on_progress)
-        viz_task = create_visualization_task(
-            self.visualizer,
-            question,
-            result.analysis_output,
-            list(analysis_df.columns),
-        )
-        viz_crew = Crew(
-            agents=[self.visualizer],
-            tasks=[viz_task],
-            process=Process.sequential,
-            verbose=True,
-        )
-        viz_response = viz_crew.kickoff()
-        viz_code = extract_python_code(str(viz_response))
-        result.visualization_code = viz_code
 
-        viz_exec = execute_code(
-            viz_code,
-            df=cleaned_df,
-            extra_locals={"result_df": analysis_df},
-        )
+        viz_exec = {"success": False, "error": "", "figures": [], "stdout": ""}
+        viz_code = ""
+        max_viz_attempts = 3
+        previous_error = ""
+
+        for attempt in range(1, max_viz_attempts + 1):
+            viz_task = create_visualization_task(
+                self.visualizer,
+                question,
+                result.analysis_output,
+                list(analysis_df.columns),
+                previous_error=previous_error,
+            )
+            viz_crew = Crew(
+                agents=[self.visualizer],
+                tasks=[viz_task],
+                process=Process.sequential,
+                verbose=True,
+            )
+            viz_response = viz_crew.kickoff()
+            viz_code = extract_python_code(str(viz_response))
+
+            viz_exec = execute_code(
+                viz_code,
+                df=cleaned_df,
+                extra_locals={"result_df": analysis_df},
+            )
+
+            if viz_exec["success"]:
+                self._log(
+                    progress,
+                    f"[Visualizer] Chart code succeeded on attempt {attempt}.",
+                    on_progress,
+                )
+                break
+            else:
+                previous_error = viz_exec["error"]
+                self._log(
+                    progress,
+                    f"[Visualizer] Chart attempt {attempt} failed, retrying...",
+                    on_progress,
+                )
+
+        result.visualization_code = viz_code
 
         if viz_exec["success"] and viz_exec["figures"]:
             chart_paths = save_all_figures(
@@ -207,9 +239,19 @@ class DataScientistOrchestrator:
             self._log(progress, f"[Visualizer] Saved {len(chart_paths)} chart(s).", on_progress)
         elif not viz_exec["success"]:
             errors.append(f"Visualization code failed: {viz_exec['error']}")
-            self._log(progress, "[Visualizer] Chart code failed, generating summary only...", on_progress)
+            self._log(
+                progress,
+                "[Visualizer] Chart code failed after 3 attempts, generating summary only...",
+                on_progress,
+            )
 
-        # Generate narrative summary
+        # Generate narrative summary.
+        # NOTE: we intentionally do NOT prepend viz_exec["stdout"] here.
+        # The visualization code's printed output (e.g. "Total Sales Revenue
+        # by Region: ...") duplicates the analysis output already shown in
+        # the "Analysis Output" section above, so mixing it into the
+        # narrative summary just creates a confusing repeated intro.
+        # The summary task below produces a clean, standalone narrative.
         chart_info = (
             ", ".join(result.chart_paths) if result.chart_paths else "No charts generated"
         )
@@ -227,9 +269,6 @@ class DataScientistOrchestrator:
         )
         summary_response = summary_crew.kickoff()
         result.summary = str(summary_response).strip()
-
-        if viz_exec["success"] and viz_exec["stdout"]:
-            result.summary = f"{viz_exec['stdout']}\n\n{result.summary}"
 
         result.success = True
         result.errors = errors

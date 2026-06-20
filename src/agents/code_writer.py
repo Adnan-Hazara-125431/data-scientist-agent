@@ -34,20 +34,29 @@ def create_analysis_task(
     """Create a task for the code writer agent."""
     return Task(
         description=(
+            "IMPORTANT: A pandas DataFrame named `df` ALREADY EXISTS in the "
+            "execution environment, pre-loaded with the real cleaned data. It is "
+            "injected automatically before your code runs. Do NOT create your own "
+            "sample/example/mock data. Do NOT write `df = pd.DataFrame(...)` or "
+            "`data = [...]` with hardcoded values. Only write analysis code that "
+            "operates on the existing `df` variable as-is.\n\n"
             f"User question: {question}\n\n"
             f"Available columns: {', '.join(columns)}\n\n"
             f"Dataset info:\n{schema_text}\n\n"
             "Write Python/pandas code that:\n"
-            "1. Uses the existing `df` DataFrame (already cleaned)\n"
+            "1. Uses the existing `df` DataFrame (already cleaned, do not recreate it)\n"
             "2. Answers the user's question completely\n"
             "3. Stores the main result in a variable called `result_df`\n"
             "4. Prints key findings to stdout\n"
             "5. Uses only pandas, numpy — no file I/O or network calls\n\n"
-            "Return ONLY executable Python code inside a ```python code block."
+            "Return ONLY executable Python code inside a ```python code block. "
+            "Do NOT include any import statements for pandas, numpy, etc. — they "
+            "are already available as `pd` and `np`."
         ),
         expected_output=(
-            "Executable Python code in a ```python block that analyzes `df` "
-            "and stores results in `result_df`."
+            "Executable Python code in a ```python block that analyzes the "
+            "existing `df` (never replaces it with sample data) and stores "
+            "results in `result_df`."
         ),
         agent=agent,
     )

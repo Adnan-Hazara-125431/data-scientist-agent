@@ -7,6 +7,7 @@ Run from project root:
 
 from __future__ import annotations
 
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -25,6 +26,46 @@ st.set_page_config(
     page_icon="📊",
     layout="wide",
 )
+
+# Regex to strip ANSI escape codes (e.g. from CrewAI's colored terminal output)
+ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+# Matches CrewAI's entire "Tracing Status" notice box, including the
+# top/bottom border lines that contain the "Tracing Status" text itself
+# (e.g. "╭─────── Tracing Status ───────╮"), the info lines inside the
+# box, and the closing border line. This is more reliable than only
+# matching pure box-drawing lines, since the border lines mix box
+# characters with the "Tracing Status" label text.
+TRACING_BOX_PATTERN = re.compile(
+    r"[╭┌].*?Tracing Status.*?[╰└][─\s]*[╯┘]?",
+    re.DOTALL,
+)
+
+# Fallback: matches any remaining line made up entirely of box-drawing
+# characters (covers stray border fragments not caught above).
+BOX_LINE_PATTERN = re.compile(r"^[\s│╭╮╰╯─┌┐└┘|]+$", re.MULTILINE)
+
+# Matches the "Tracing is disabled" notice text itself, in case it
+# appears outside of a box (plain text fallback).
+TRACING_TEXT_PATTERN = re.compile(
+    r"Info: Tracing is disabled\..*?crewai traces enable",
+    re.DOTALL,
+)
+
+
+def clean_text(text: str) -> str:
+    """Remove ANSI codes, CrewAI's tracing notice box, and escape $ for markdown."""
+    if not text:
+        return text
+    text = ANSI_ESCAPE_PATTERN.sub("", text)
+    text = TRACING_BOX_PATTERN.sub("", text)
+    text = TRACING_TEXT_PATTERN.sub("", text)
+    text = BOX_LINE_PATTERN.sub("", text)
+    text = text.replace("$", "\\$")
+    # Collapse multiple blank lines left behind after removal
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
 
 st.title("📊 Data Scientist Agent")
 st.markdown(
@@ -111,7 +152,7 @@ if analyze_btn:
             # Analysis output
             if result.analysis_output:
                 st.subheader("📋 Analysis Output")
-                st.code(result.analysis_output, language="text")
+                st.code(clean_text(result.analysis_output), language="text")
 
             # Charts
             if result.chart_paths:
@@ -124,13 +165,13 @@ if analyze_btn:
             # Summary
             if result.summary:
                 st.subheader("📝 Summary")
-                st.markdown(result.summary)
+                st.markdown(clean_text(result.summary))
 
             # Errors
             if result.errors:
                 with st.expander("⚠️ Errors & Warnings"):
                     for err in result.errors:
-                        st.warning(err)
+                        st.warning(clean_text(err))
 
             # Code expanders
             with st.expander("🔍 Generated Code"):
